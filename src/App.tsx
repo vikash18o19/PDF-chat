@@ -394,6 +394,16 @@ function App() {
   const viewerOverlayTone = viewerStatus === 'idle' ? 'error' : 'info';
 
   useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    document.body.classList.toggle('viewer-active', viewerOpen);
+    return () => {
+      document.body.classList.remove('viewer-active');
+    };
+  }, [viewerOpen]);
+
+  useEffect(() => {
     if (!viewerOpen || typeof window === 'undefined') {
       return;
     }

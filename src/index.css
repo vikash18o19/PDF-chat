@@ -1,14 +1,25 @@
 :root {
-  font-family: 'Inter', 'SF Pro Display', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
-    sans-serif;
+  font-family: 'Inter', 'SF Pro Display', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   line-height: 1.6;
   font-weight: 400;
-  color: #0b1220;
-  background-color: #f4f6fb;
+  color: #f8fbff;
+  background-color: #020617;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  --glass-bg: rgba(4, 8, 24, 0.7);
+  --glass-bg-strong: rgba(8, 12, 32, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.18);
+  --glass-border-strong: rgba(255, 255, 255, 0.35);
+  --text-strong: #f8fbff;
+  --text-muted: rgba(219, 229, 255, 0.78);
+  --accent-primary: #7dd3fc;
+  --accent-secondary: #a855f7;
+  --accent-tertiary: #f5d0fe;
+  --danger: #fca5a5;
+  --radius-lg: 26px;
+  --radius-xl: 38px;
 }
 
 *,
@@ -20,13 +31,56 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(circle at top, #eef2ff 0%, #f9fafb 55%, #f4f6fb 100%);
+  position: relative;
+  overflow-x: hidden;
+  color: var(--text-strong);
+  background:
+    radial-gradient(circle at 12% 18%, rgba(125, 211, 252, 0.45), transparent 55%),
+    radial-gradient(circle at 82% 12%, rgba(248, 113, 113, 0.32), transparent 50%),
+    radial-gradient(circle at 30% 78%, rgba(14, 165, 233, 0.25), transparent 55%),
+    linear-gradient(135deg, #01030a, #050f24, #0b1a3c);
+  background-size: 160% 160%, 180% 180%, 200% 200%, 120% 120%;
+  background-blend-mode: screen, screen, screen, normal;
+}
+
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  width: 70vw;
+  height: 70vw;
+  top: 6%;
+  left: -20%;
+  background: radial-gradient(circle, rgba(147, 197, 253, 0.35), transparent 60%);
+  filter: blur(120px);
+  opacity: 0.35;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  z-index: 0;
+}
+
+body::after {
+  top: auto;
+  bottom: -10%;
+  left: auto;
+  right: -15%;
+  width: 60vw;
+  height: 60vw;
+  background: radial-gradient(circle, rgba(248, 113, 113, 0.22), transparent 55%);
 }
 
 #root {
   min-height: 100vh;
+  position: relative;
+  isolation: isolate;
+  padding: clamp(1rem, 2vw, 2rem);
+  z-index: 1;
 }
 
 a {
   color: inherit;
+}
+
+body.viewer-active #root {
+  padding-bottom: clamp(18rem, 40vh, 24rem);
 }
