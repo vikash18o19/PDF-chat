@@ -26,11 +26,58 @@ const writeTempPdf = async (buffer, filename) => {
   return tempPath;
 };
 
-const uploadToStage = async (connection, localPath, stagePath) => {
+const extractRelativeStagePath = (value) => {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.startsWith('@')) {
+    const slashIndex = normalized.indexOf('/');
+    return slashIndex >= 0 ? normalized.slice(slashIndex + 1) : null;
+  }
+  const protocolIndex = normalized.indexOf('://');
+  if (protocolIndex >= 0) {
+    const firstSlash = normalized.indexOf('/', protocolIndex + 3);
+    if (firstSlash >= 0) {
+      return normalized.slice(firstSlash + 1);
+    }
+    return null;
+  }
+  return normalized;
+};
+
+const extractStageReferenceFromPath = (value) => {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('@')) {
+    return null;
+  }
+  const slashIndex = trimmed.indexOf('/');
+  if (slashIndex >= 0) {
+    return trimmed.slice(0, slashIndex);
+  }
+  return trimmed;
+};
+
+const uploadToStage = async (connection, localPath, stagePrefix = '') => {
   const escapedLocalPath = localPath.replace(/\\/g, '/').replace(/'/g, "''");
-  const escapedStage = stagePath.replace(/'/g, "''");
-  const sqlText = `put file://${escapedLocalPath} ${STAGE_REFERENCE}/${escapedStage} auto_compress=false overwrite=true`;
-  await execute(connection, { sqlText });
+  const normalizedPrefix = stagePrefix.replace(/^\/+|\/+$/g, '');
+  const stageTarget = normalizedPrefix ? `${STAGE_REFERENCE}/${normalizedPrefix}` : STAGE_REFERENCE;
+  const sqlText = `put file://${escapedLocalPath} ${stageTarget} auto_compress=false overwrite=true`;
+  const rows = await execute(connection, { sqlText });
+  const target = rows?.[0]?.target || rows?.[0]?.TARGET;
+  const resolvedTarget = extractRelativeStagePath(target);
+  const baseName =
+    (resolvedTarget && resolvedTarget.split('/').pop()) ||
+    (typeof target === 'string' ? target.split('/').pop() : null) ||
+    path.basename(localPath);
+  const safeName = baseName?.trim() ? baseName.trim() : path.basename(localPath);
+  return normalizedPrefix ? `${normalizedPrefix}/${safeName}` : safeName;
 };
 
 const persistDocument = async (connection, { fileId, filename, stagePath, chunkCount }) => {
@@ -39,13 +86,14 @@ const persistDocument = async (connection, { fileId, filename, stagePath, chunkC
     filename,
     stagePath,
     chunkCount,
+    stageReference: STAGE_REFERENCE,
   };
   await execute(connection, {
     sqlText: `
-      insert into ${TABLE_DOCUMENTS} (FILE_ID, FILENAME, STAGE_PATH, CHUNK_COUNT, METADATA, CREATED_AT)
-      select ?, ?, ?, ?, parse_json(?), current_timestamp()
+      insert into ${TABLE_DOCUMENTS} (FILE_ID, FILENAME, STAGE_PATH, CHUNK_COUNT, METADATA, STAGE_REFERENCE, CREATED_AT)
+      select ?, ?, ?, ?, parse_json(?), ?, current_timestamp()
     `,
-    binds: [fileId, filename, stagePath, chunkCount, JSON.stringify(metadata)],
+    binds: [fileId, filename, stagePath, chunkCount, JSON.stringify(metadata), STAGE_REFERENCE],
   });
 };
 
@@ -58,6 +106,7 @@ const persistChunks = async (connection, { fileId, filename, stagePath, chunks }
       charStart: chunk.pageCharStart,
       charEnd: chunk.pageCharEnd,
       stagePath,
+      stageReference: STAGE_REFERENCE,
       filename,
     };
 
@@ -112,30 +161,33 @@ const cleanupTempFile = async (filePath) => {
 const ingestPdf = async (buffer, originalName) => {
   const filename = sanitizeFilename(originalName);
   const fileId = randomUUID();
-  const stagePath = `${fileId}/${filename}`;
+  const stageFolder = fileId;
+  const intendedStagePath = `${stageFolder}/${filename}`;
+  let resolvedStagePath = intendedStagePath;
 
   const chunks = await chunkPdf(buffer);
   if (!chunks.length) {
     throw new Error('Unable to extract readable text from the PDF.');
   }
 
-  const tempFilePath = await writeTempPdf(buffer, `${fileId}-${filename}`);
+  const tempFilePath = await writeTempPdf(buffer, filename);
 
   try {
     await withSnowflakeConnection(async (connection) => {
-      await uploadToStage(connection, tempFilePath, stagePath);
+      resolvedStagePath = await uploadToStage(connection, tempFilePath, stageFolder);
       await persistDocument(connection, {
         fileId,
         filename,
-        stagePath,
+        stagePath: resolvedStagePath,
         chunkCount: chunks.length,
       });
       await persistChunks(connection, {
         fileId,
         filename,
-        stagePath,
+        stagePath: resolvedStagePath,
         chunks,
       });
+      return resolvedStagePath;
     });
   } finally {
     await cleanupTempFile(tempFilePath);
@@ -144,7 +196,7 @@ const ingestPdf = async (buffer, originalName) => {
   return {
     fileId,
     filename,
-    stagePath,
+    stagePath: resolvedStagePath,
     chunkCount: chunks.length,
   };
 };
@@ -219,7 +271,12 @@ const mapChunkRow = (row) => {
     chunkId: row.CHUNK_ID,
     fileId: row.FILE_ID,
     fileName: row.FILENAME,
-    stagePath: row.STAGE_PATH || meta.stagePath,
+      stagePath: extractRelativeStagePath(row.STAGE_PATH || meta.stagePath),
+    stageReference:
+      row.STAGE_REFERENCE ||
+      meta.stageReference ||
+      extractStageReferenceFromPath(row.STAGE_PATH || meta.stagePath) ||
+      STAGE_REFERENCE,
     pageNumber: Number(row.PAGE_NUMBER),
     chunkIndex: Number(row.CHUNK_INDEX),
     text: row.CHUNK_TEXT,
@@ -259,6 +316,7 @@ const queryKnowledgeBase = async ({ question, fileIds = [], topK = 5 }) => {
         v.SOURCE_META,
         d.FILENAME,
         d.STAGE_PATH,
+        d.STAGE_REFERENCE,
         vector_cosine_similarity(v.EMBEDDING, (select embedding from query_embedding)) as RELEVANCE
       from ${TABLE_VECTORS} v
       join ${TABLE_DOCUMENTS} d on d.FILE_ID = v.FILE_ID
@@ -288,7 +346,7 @@ const listDocuments = async () => {
   return withSnowflakeConnection(async (connection) => {
     const rows = await execute(connection, {
       sqlText: `
-        select FILE_ID, FILENAME, STAGE_PATH, CHUNK_COUNT, CREATED_AT
+        select FILE_ID, FILENAME, STAGE_PATH, STAGE_REFERENCE, CHUNK_COUNT, CREATED_AT
         from ${TABLE_DOCUMENTS}
         order by CREATED_AT desc
       `,
@@ -297,7 +355,11 @@ const listDocuments = async () => {
     return rows.map((row) => ({
       fileId: row.FILE_ID,
       filename: row.FILENAME,
-      stagePath: row.STAGE_PATH,
+      stagePath: extractRelativeStagePath(row.STAGE_PATH),
+      stageReference:
+        row.STAGE_REFERENCE ||
+        extractStageReferenceFromPath(row.STAGE_PATH) ||
+        STAGE_REFERENCE,
       chunkCount: Number(row.CHUNK_COUNT ?? 0),
       createdAt: row.CREATED_AT,
     }));
@@ -308,4 +370,6 @@ module.exports = {
   ingestPdf,
   listDocuments,
   queryKnowledgeBase,
+  extractRelativeStagePath,
+  extractStageReferenceFromPath,
 };

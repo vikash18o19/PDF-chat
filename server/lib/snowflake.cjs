@@ -72,6 +72,7 @@ const ensureDocumentsTableShape = async (connection) => {
     STAGE_PATH string,
     CHUNK_COUNT number,
     METADATA variant,
+    STAGE_REFERENCE string,
     CREATED_AT timestamp_ltz
   )` });
 
@@ -80,6 +81,9 @@ const ensureDocumentsTableShape = async (connection) => {
   });
   await execute(connection, {
     sqlText: `alter table ${TABLE_DOCUMENTS} add column if not exists METADATA variant`,
+  });
+  await execute(connection, {
+    sqlText: `alter table ${TABLE_DOCUMENTS} add column if not exists STAGE_REFERENCE string`,
   });
 };
 

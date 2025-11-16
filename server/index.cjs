@@ -8,17 +8,38 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { z } = require('zod');
 
-const { ingestPdf, queryKnowledgeBase, listDocuments } = require('./lib/workflows.cjs');
-const { runQuery, STAGE_REFERENCE } = require('./lib/snowflake.cjs');
+const {
+  ingestPdf,
+  queryKnowledgeBase,
+  listDocuments,
+  extractRelativeStagePath,
+  extractStageReferenceFromPath,
+} = require('./lib/workflows.cjs');
+const { runQuery, STAGE_REFERENCE, TABLE_DOCUMENTS } = require('./lib/snowflake.cjs');
 
-const pdfRequestSchema = z.object({
-  identifier: z
-    .string({
-      required_error: 'pdf identifier is required',
-      invalid_type_error: 'pdf identifier must be a string',
-    })
-    .min(1, 'pdf identifier cannot be empty'),
-});
+const pdfRequestSchema = z
+  .object({
+    identifier: z
+      .string({
+        invalid_type_error: 'pdf identifier must be a string',
+      })
+      .optional(),
+    fileId: z
+      .string({
+        invalid_type_error: 'fileId must be a string',
+      })
+      .uuid('fileId must be a valid UUID')
+      .optional(),
+    stage: z
+      .string({
+        invalid_type_error: 'stage must be a string',
+      })
+      .optional(),
+  })
+  .refine((data) => Boolean(data.identifier || data.fileId), {
+    message: 'Provide at least an identifier or fileId.',
+    path: ['identifier'],
+  });
 
 const IDENTIFIER_PATTERN = /^[\w.\-\/ ]+$/i;
 
@@ -41,55 +62,243 @@ const sanitizeIdentifier = (identifier) => {
   return trimmed;
 };
 
-const getPresignedUrl = async (rawIdentifier) => {
-  const safeIdentifier = sanitizeIdentifier(rawIdentifier);
+const sanitizeStageReference = (reference) => {
+  const trimmed = reference?.trim();
+  if (!trimmed) {
+    return STAGE_REFERENCE;
+  }
+  const STAGE_PATTERN = /^@?[\w.]+$/i;
+  if (!STAGE_PATTERN.test(trimmed)) {
+    const error = new Error('Stage reference contains unsupported characters.');
+    error.statusCode = 400;
+    throw error;
+  }
+  return trimmed.startsWith('@') ? trimmed : `@${trimmed}`;
+};
+
+const parseVariant = (value) => {
+  if (!value) {
+    return {};
+  }
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  if (typeof value === 'object') {
+    return value;
+  }
+  return {};
+};
+
+const fetchDocumentPointer = async (fileId) => {
+  if (!fileId) {
+    return null;
+  }
+  const rows = await runQuery(
+    `select FILE_ID, FILENAME, STAGE_PATH, STAGE_REFERENCE, METADATA from ${TABLE_DOCUMENTS} where FILE_ID = ? limit 1`,
+    [fileId],
+  );
+  if (!rows?.length) {
+    return null;
+  }
+  const doc = rows[0];
+  const meta = parseVariant(doc.METADATA);
+  return {
+    fileId: doc.FILE_ID || meta.fileId || fileId,
+    filename: doc.FILENAME || meta.filename || 'document.pdf',
+    stagePath: extractRelativeStagePath(doc.STAGE_PATH || meta.stagePath) || null,
+    stageReference:
+      doc.STAGE_REFERENCE ||
+      meta.stageReference ||
+      extractStageReferenceFromPath(doc.STAGE_PATH || meta.stagePath) ||
+      null,
+  };
+};
+
+const LEGACY_FLAT_IDENTIFIER = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(.+)$/i;
+
+const extractLegacyTailInfo = (identifier) => {
+  if (!identifier || typeof identifier !== 'string') {
+    return null;
+  }
+  const tail = identifier.trim().split('/').filter(Boolean).pop();
+  if (!tail) {
+    return null;
+  }
+  const match = tail.match(LEGACY_FLAT_IDENTIFIER);
+  if (!match) {
+    return null;
+  }
+  return { fileId: match[1], filename: match[2] };
+};
+
+const buildLegacyCandidateIdentifier = (identifier, pointer) => {
+  if (!identifier) {
+    return null;
+  }
+  const trimmed = identifier.trim().replace(/\/+$/, '');
+  if (!trimmed.includes('/')) {
+    return null;
+  }
+  const segments = trimmed.split('/');
+  if (segments.length < 2) {
+    return null;
+  }
+  const fallbackId = pointer?.fileId || segments[segments.length - 2];
+  const fallbackName = pointer?.filename || segments[segments.length - 1];
+  if (!fallbackId || !fallbackName) {
+    return null;
+  }
+  const legacySuffix = `${fallbackId}-${fallbackName}`;
+  if (trimmed.endsWith(`/${legacySuffix}`)) {
+    return null;
+  }
+  return `${trimmed}/${legacySuffix}`;
+};
+
+const buildStageCandidates = ({ pointer, requestIdentifier, requestStage }) => {
+  const candidates = [];
+  const seen = new Set();
+  const defaultStage = pointer?.stageReference ?? requestStage ?? STAGE_REFERENCE;
+  const addCandidate = (identifier, stageRef) => {
+    if (!identifier) return;
+    const trimmed = identifier.trim();
+    if (!trimmed) return;
+    const resolvedStage = sanitizeStageReference(stageRef ?? defaultStage);
+    const key = `${resolvedStage}::${trimmed}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    candidates.push({ identifier: trimmed, stageReference: resolvedStage });
+  };
+
+  const addCanonicalVariants = (fileId, filename, stageRef) => {
+    if (!fileId || !filename) {
+      return;
+    }
+    const canonical = `${fileId}/${filename}`;
+    addCandidate(canonical, stageRef);
+    addCandidate(`${canonical}/${fileId}-${filename}`, stageRef);
+  };
+
+  if (requestIdentifier) {
+    addCandidate(requestIdentifier, requestStage);
+    const legacyFromRequest = buildLegacyCandidateIdentifier(requestIdentifier, pointer);
+    if (legacyFromRequest) {
+      addCandidate(legacyFromRequest, requestStage);
+    }
+    const inferred = extractLegacyTailInfo(requestIdentifier);
+    if (inferred) {
+      addCanonicalVariants(inferred.fileId, inferred.filename, requestStage);
+    }
+  }
+
+  if (pointer?.stagePath) {
+    addCandidate(pointer.stagePath, pointer.stageReference);
+    const legacyFromPointer = buildLegacyCandidateIdentifier(pointer.stagePath, pointer);
+    if (legacyFromPointer) {
+      addCandidate(legacyFromPointer, pointer.stageReference);
+    }
+  }
+
+  if (pointer?.fileId && pointer?.filename) {
+    addCanonicalVariants(pointer.fileId, pointer.filename, pointer.stageReference);
+  }
+
+  return candidates;
+};
+
+const createPresignedUrl = async ({ stageReference, identifier }) => {
+  const stageRef = sanitizeStageReference(stageReference ?? STAGE_REFERENCE);
+  const safeIdentifier = sanitizeIdentifier(identifier);
   const escapedIdentifier = safeIdentifier.replace(/'/g, "''");
 
   const rows = await runQuery(
-    `SELECT GET_PRESIGNED_URL(${STAGE_REFERENCE}, '${escapedIdentifier}', 3600) AS URL`,
+    `SELECT GET_PRESIGNED_URL(${stageRef}, '${escapedIdentifier}', 3600) AS URL`,
   );
 
   if (!rows?.length || !rows[0].URL) {
     throw new Error(`Unable to create presigned URL for ${safeIdentifier}`);
   }
 
-  return rows[0].URL;
+  return {
+    url: rows[0].URL,
+    identifier: safeIdentifier,
+    stageReference: stageRef,
+  };
 };
 
-const streamPdfToResponse = async ({ identifier, res }) => {
-  const presignedUrl = await getPresignedUrl(identifier);
-  const pdfResponse = await fetch(presignedUrl);
+const streamPdfToResponse = async ({ stageReference, identifier, fileId, res }) => {
+  const pointer = await fetchDocumentPointer(fileId);
+  const stageCandidates = buildStageCandidates({
+    pointer,
+    requestIdentifier: identifier,
+    requestStage: stageReference,
+  });
 
-  if (!pdfResponse.ok || !pdfResponse.body) {
-    throw new Error(`Failed to download PDF: ${pdfResponse.status} ${pdfResponse.statusText}`);
+  if (!stageCandidates.length) {
+    throw new Error('Document identifier is missing.');
   }
 
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Cache-Control', 'no-store');
-  const filename = identifier.split('/').pop() || 'document.pdf';
-  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-
-  if (typeof pdfResponse.body.pipe === 'function') {
-    pdfResponse.body.pipe(res);
-    return;
-  }
-
-  if (Readable.fromWeb) {
-    const nodeReadable = Readable.fromWeb(pdfResponse.body);
-    nodeReadable.on('error', (err) => {
-      console.error('Streaming error from Snowflake presigned URL', err);
-      if (!res.headersSent) {
-        res.status(500).json({ message: 'Failed to stream PDF' });
-      } else {
-        res.end();
+  let lastError;
+  for (const candidate of stageCandidates) {
+    try {
+      const { url, identifier: resolvedIdentifier, stageReference: resolvedStage } = await createPresignedUrl(
+        candidate,
+      );
+      const pdfResponse = await fetch(url);
+      if (!pdfResponse.ok || !pdfResponse.body) {
+        throw new Error(`Stage download failed with ${pdfResponse.status} ${pdfResponse.statusText}`);
       }
-    });
-    nodeReadable.pipe(res);
-    return;
+
+      const downloadName = pointer?.filename || resolvedIdentifier.split('/').pop() || 'document.pdf';
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Content-Disposition', `inline; filename="${downloadName}"`);
+      res.setHeader('X-Pdf-Filename', downloadName);
+      if (pointer?.fileId) {
+        res.setHeader('X-Pdf-File-Id', pointer.fileId);
+      }
+      res.setHeader('X-Pdf-Stage-Path', resolvedIdentifier);
+      res.setHeader('X-Pdf-Stage-Reference', resolvedStage);
+
+      if (typeof pdfResponse.body.pipe === 'function') {
+        pdfResponse.body.pipe(res);
+        return;
+      }
+
+      if (Readable.fromWeb) {
+        const nodeReadable = Readable.fromWeb(pdfResponse.body);
+        nodeReadable.on('error', (err) => {
+          console.error('Streaming error from Snowflake presigned URL', err);
+          if (!res.headersSent) {
+            res.status(500).json({ message: 'Failed to stream PDF' });
+          } else {
+            res.end();
+          }
+        });
+        nodeReadable.pipe(res);
+        return;
+      }
+
+      const buffer = Buffer.from(await pdfResponse.arrayBuffer());
+      res.end(buffer);
+      return;
+    } catch (error) {
+      lastError = error;
+      console.warn('Attempt to stream PDF failed, trying next candidate', {
+        candidate,
+        error: error?.message,
+      });
+    }
   }
 
-  const buffer = Buffer.from(await pdfResponse.arrayBuffer());
-  res.end(buffer);
+  throw lastError ?? new Error('Unable to retrieve PDF from Snowflake stage. Double-check the identifier and try again.');
 };
 
 const queryRequestSchema = z.object({
@@ -190,7 +399,12 @@ app.get('/api/pdf', async (req, res) => {
   }
 
   try {
-    await streamPdfToResponse({ identifier: parsed.data.identifier, res });
+    await streamPdfToResponse({
+      stageReference: parsed.data.stage,
+      identifier: parsed.data.identifier ?? undefined,
+      fileId: parsed.data.fileId ?? undefined,
+      res,
+    });
   } catch (error) {
     console.error('Failed to serve PDF', error);
     const statusCode = error?.statusCode ?? 502;

@@ -17,6 +17,7 @@ type DocumentSummary = {
   fileId: string;
   filename: string;
   stagePath: string;
+  stageReference: string;
   chunkCount: number;
   createdAt?: string;
 };
@@ -26,6 +27,7 @@ type SourceChunk = {
   fileId: string;
   fileName: string;
   stagePath: string;
+  stageReference: string;
   pageNumber: number;
   chunkIndex: number;
   text: string;
@@ -36,6 +38,8 @@ type SourceChunk = {
 
 type ViewerConfig = {
   identifier: string;
+  stageReference: string;
+  fileId: string;
   page: number;
   highlight: HighlightRange | null;
 };
@@ -221,6 +225,8 @@ function App() {
     setActiveChunkId(chunk.chunkId);
     setViewerConfig({
       identifier: chunk.stagePath,
+      stageReference: chunk.stageReference,
+      fileId: chunk.fileId,
       page: chunk.pageNumber,
       highlight,
     });
@@ -249,10 +255,17 @@ function App() {
       hasAutoScrolledRef.current = false;
 
       try {
-        const response = await fetch(
-          `${apiBaseUrl}/api/pdf?identifier=${encodeURIComponent(identifier)}`,
-          { signal: controller.signal },
-        );
+        const params = new URLSearchParams();
+        params.set('identifier', identifier);
+        if (viewerConfig.stageReference) {
+          params.set('stage', viewerConfig.stageReference);
+        }
+        if (viewerConfig.fileId) {
+          params.set('fileId', viewerConfig.fileId);
+        }
+        const response = await fetch(`${apiBaseUrl}/api/pdf?${params.toString()}`, {
+          signal: controller.signal,
+        });
         if (!response.ok) {
           throw new Error(`Unable to download the PDF (status ${response.status}).`);
         }
