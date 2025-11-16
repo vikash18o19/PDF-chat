@@ -100,6 +100,7 @@ function App() {
   const textSegmentMapRef = useRef<Map<number, Map<number, { start: number; end: number }>>>(new Map());
   const pageRefs = useRef<Map<number, HTMLDivElement | null>>(new Map());
   const pagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const viewerStageRef = useRef<HTMLDivElement | null>(null);
   const hasAutoScrolledRef = useRef(false);
   const [textLayerVersion, setTextLayerVersion] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -131,12 +132,6 @@ function App() {
   useEffect(() => {
     setSelectedDocuments((current) => current.filter((id) => documents.some((doc) => doc.fileId === id)));
   }, [documents]);
-
-  useEffect(() => {
-    const handleResize = () => setViewerWidth(clamp(window.innerWidth - 80, 320, 1200));
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   const handleFileSelection = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -373,7 +368,7 @@ function App() {
   );
 
   useEffect(() => {
-    if (!numPages || !viewerConfig) {
+    if (!numPages || !viewerConfig || viewerStatus !== 'ready') {
       return;
     }
     const container = pagesContainerRef.current;
@@ -387,9 +382,37 @@ function App() {
       behavior: hasAutoScrolledRef.current ? 'smooth' : 'auto',
     });
     hasAutoScrolledRef.current = true;
-  }, [numPages, viewerConfig, documentSource]);
+  }, [numPages, viewerConfig, documentSource, viewerStatus]);
 
   const disableQuestion = !question.trim() || selectedDocuments.length === 0 || queryLoading;
+  const viewerOpen = Boolean(viewerConfig);
+  const viewerReady = viewerStatus === 'ready';
+  const viewerOverlayText =
+    viewerStatus === 'loading' ? viewerMessage ?? 'Preparing PDF preview…' : viewerMessage;
+  const workbenchClassName = `workbench${viewerOpen ? ' viewer-open' : ''}`;
+  const viewerPanelClassName = `viewer-panel${viewerOpen ? ' open' : ''}`;
+  const viewerOverlayTone = viewerStatus === 'idle' ? 'error' : 'info';
+
+  useEffect(() => {
+    if (!viewerOpen || typeof window === 'undefined') {
+      return;
+    }
+    const stageNode = viewerStageRef.current;
+    const ResizeObserverConstructor = window.ResizeObserver;
+    if (!stageNode || typeof ResizeObserverConstructor !== 'function') {
+      return;
+    }
+    const observer = new ResizeObserverConstructor((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      const nextWidth = clamp(entry.contentRect.width - 32, 280, 1200);
+      setViewerWidth((current) => Math.abs(current - nextWidth) > 1 ? nextWidth : current);
+    });
+    observer.observe(stageNode);
+    return () => observer.disconnect();
+  }, [viewerOpen]);
 
   return (
     <div className="app-shell">
@@ -407,7 +430,7 @@ function App() {
         </button>
       </header>
 
-      <div className="workbench">
+      <div className={workbenchClassName}>
         <section className="control-panel">
           <div className="panel-card upload-card">
             <div className="card-header">
@@ -550,83 +573,92 @@ function App() {
           </div>
         </section>
 
-        <aside className={`viewer-panel ${viewerConfig ? 'open' : ''}`}>
-          <div className="viewer-header">
-            <div>
-              <p className="eyebrow">PDF Preview</p>
-              <h2>{viewerConfig ? 'Context with highlights' : 'Select a chunk'}</h2>
-            </div>
-            {viewerConfig && (
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => {
-                  setViewerConfig(null);
-                  setActiveChunkId(null);
-                }}
-              >
-                Hide
-              </button>
-            )}
-          </div>
-          {!viewerConfig && <p className="card-note">Choose a source chunk to open its PDF page.</p>}
+        <aside className={viewerPanelClassName} aria-hidden={!viewerOpen}>
           {viewerConfig && (
-            <div className="viewer-shell">
-              {viewerMessage && <div className="status-card info">{viewerMessage}</div>}
-              {documentSource && (
-                <div className="pdf-viewer">
-                  {viewerStatus === 'loading' && <div className="viewer-loading">Highlighting…</div>}
-                  <Document
-                    key={viewerConfig.identifier}
-                    file={documentSource}
-                    loading={<div className="status-card info">Preparing PDF…</div>}
-                    error={
-                      <div className="status-card error">
-                        Unable to load PDF. Double-check the identifier and try again.
-                      </div>
-                    }
-                    onLoadSuccess={handleDocumentLoadSuccess}
-                    onLoadError={handleDocumentLoadError}
-                  >
-                    {numPages ? (
-                      <div className="pdf-pages" ref={pagesContainerRef}>
-                        {Array.from({ length: numPages }, (_, index) => {
-                          const pageNumber = index + 1;
-                          return (
-                            <div
-                              key={pageNumber}
-                              className="pdf-page-wrapper"
-                              ref={(node) => {
-                                if (node) {
-                                  pageRefs.current.set(pageNumber, node);
-                                } else {
-                                  pageRefs.current.delete(pageNumber);
-                                }
-                              }}
-                            >
-                              <Page
-                                className="pdf-page"
-                                pageNumber={pageNumber}
-                                width={viewerWidth}
-                                renderAnnotationLayer={false}
-                                renderTextLayer
-                                onGetTextSuccess={(textContent) => handleTextSuccess(pageNumber, textContent)}
-                                customTextRenderer={(item) => customTextRenderer(pageNumber, item)}
-                              />
+            <>
+              <div className="viewer-header">
+                <div>
+                  <p className="eyebrow">PDF Preview</p>
+                  <h2>Context with highlights</h2>
+                </div>
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => {
+                    setViewerConfig(null);
+                    setActiveChunkId(null);
+                  }}
+                >
+                  Hide
+                </button>
+              </div>
+              <div className="viewer-shell">
+                <div className="viewer-stage" ref={viewerStageRef}>
+                  <div className={`pdf-viewer${viewerReady ? ' visible' : ''}`} aria-hidden={!viewerReady}>
+                    {documentSource && (
+                      <>
+                        <Document
+                          key={viewerConfig.identifier}
+                          file={documentSource}
+                          loading={<div className="status-card info">Preparing PDF…</div>}
+                          error={
+                            <div className="status-card error">
+                              Unable to load PDF. Double-check the identifier and try again.
                             </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="status-card info">Preparing PDF pages…</div>
+                          }
+                          onLoadSuccess={handleDocumentLoadSuccess}
+                          onLoadError={handleDocumentLoadError}
+                        >
+                          {numPages ? (
+                            <div className="pdf-pages" ref={pagesContainerRef}>
+                              {Array.from({ length: numPages }, (_, index) => {
+                                const pageNumber = index + 1;
+                                return (
+                                  <div
+                                    key={pageNumber}
+                                    className="pdf-page-wrapper"
+                                    ref={(node) => {
+                                      if (node) {
+                                        pageRefs.current.set(pageNumber, node);
+                                      } else {
+                                        pageRefs.current.delete(pageNumber);
+                                      }
+                                    }}
+                                  >
+                                    <Page
+                                      className="pdf-page"
+                                      pageNumber={pageNumber}
+                                      width={viewerWidth}
+                                      renderAnnotationLayer={false}
+                                      renderTextLayer
+                                      onGetTextSuccess={(textContent) => handleTextSuccess(pageNumber, textContent)}
+                                      customTextRenderer={(item) => customTextRenderer(pageNumber, item)}
+                                    />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="status-card info">Preparing PDF pages…</div>
+                          )}
+                        </Document>
+                        {viewerReady && (
+                          <div className="page-footnote">
+                            Centered on page {viewerConfig.page} {numPages ? `of ${numPages}` : ''}
+                          </div>
+                        )}
+                      </>
                     )}
-                  </Document>
-                  <div className="page-footnote">
-                    Centered on page {viewerConfig.page} {numPages ? `of ${numPages}` : ''}
+                  </div>
+                  <div className={`viewer-overlay ${viewerReady ? 'hidden' : ''} ${viewerOverlayTone}`}>
+                    {viewerStatus === 'loading' && (
+                      <div className="loading-spinner" role="status" aria-label="Loading PDF preview" />
+                    )}
+                    {viewerOverlayText && <p>{viewerOverlayText}</p>}
                   </div>
                 </div>
-              )}
-            </div>
+              </div>
+            </>
           )}
         </aside>
       </div>
