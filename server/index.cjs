@@ -1,48 +1,15 @@
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
-const dotenv = require('dotenv');
-const snowflake = require('snowflake-sdk');
+const multer = require('multer');
 const { Readable } = require('node:stream');
 const http = require('node:http');
 const path = require('node:path');
 const fs = require('node:fs');
 const { z } = require('zod');
 
-dotenv.config();
-
-const {
-  SNOWFLAKE_ACCOUNT,
-  SNOWFLAKE_USER,
-  SNOWFLAKE_PASSWORD,
-  SNOWFLAKE_ROLE,
-  SNOWFLAKE_WAREHOUSE,
-  SNOWFLAKE_DATABASE,
-  SNOWFLAKE_SCHEMA,
-  SNOWFLAKE_STAGE,
-} = process.env;
-
-const ensureEnv = (value, key) => {
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
-  return value;
-};
-
-const connectionConfig = {
-  account: ensureEnv(SNOWFLAKE_ACCOUNT, 'SNOWFLAKE_ACCOUNT'),
-  username: ensureEnv(SNOWFLAKE_USER, 'SNOWFLAKE_USER'),
-  password: ensureEnv(SNOWFLAKE_PASSWORD, 'SNOWFLAKE_PASSWORD'),
-  role: ensureEnv(SNOWFLAKE_ROLE, 'SNOWFLAKE_ROLE'),
-  warehouse: ensureEnv(SNOWFLAKE_WAREHOUSE, 'SNOWFLAKE_WAREHOUSE'),
-  database: ensureEnv(SNOWFLAKE_DATABASE, 'SNOWFLAKE_DATABASE'),
-  schema: ensureEnv(SNOWFLAKE_SCHEMA, 'SNOWFLAKE_SCHEMA'),
-};
-
-const stageReferenceRaw = ensureEnv(SNOWFLAKE_STAGE, 'SNOWFLAKE_STAGE').trim();
-const stageReference = stageReferenceRaw.startsWith('@')
-  ? stageReferenceRaw
-  : `@${stageReferenceRaw}`;
+const { ingestPdf, queryKnowledgeBase, listDocuments } = require('./lib/workflows.cjs');
+const { runQuery, STAGE_REFERENCE } = require('./lib/snowflake.cjs');
 
 const pdfRequestSchema = z.object({
   identifier: z
@@ -74,41 +41,12 @@ const sanitizeIdentifier = (identifier) => {
   return trimmed;
 };
 
-const runQuery = (sqlText, binds = []) =>
-  new Promise((resolve, reject) => {
-    const connection = snowflake.createConnection(connectionConfig);
-
-    connection.connect((connectErr) => {
-      if (connectErr) {
-        return reject(connectErr);
-      }
-
-      connection.execute({
-        sqlText,
-        binds,
-        complete: (execErr, stmt, rows) => {
-          connection.destroy((destroyErr) => {
-            if (destroyErr) {
-              console.error('Failed to release Snowflake connection', destroyErr);
-            }
-          });
-
-          if (execErr) {
-            return reject(execErr);
-          }
-
-          resolve(rows);
-        },
-      });
-    });
-  });
-
 const getPresignedUrl = async (rawIdentifier) => {
   const safeIdentifier = sanitizeIdentifier(rawIdentifier);
   const escapedIdentifier = safeIdentifier.replace(/'/g, "''");
 
   const rows = await runQuery(
-    `SELECT GET_PRESIGNED_URL(${stageReference}, '${escapedIdentifier}', 3600) AS URL`,
+    `SELECT GET_PRESIGNED_URL(${STAGE_REFERENCE}, '${escapedIdentifier}', 3600) AS URL`,
   );
 
   if (!rows?.length || !rows[0].URL) {
@@ -154,12 +92,91 @@ const streamPdfToResponse = async ({ identifier, res }) => {
   res.end(buffer);
 };
 
+const queryRequestSchema = z.object({
+  question: z
+    .string({
+      required_error: 'Question is required',
+      invalid_type_error: 'Question must be a string',
+    })
+    .min(1, 'Question cannot be empty'),
+  fileIds: z
+    .array(z.string().min(1))
+    .max(8)
+    .optional()
+    .default([]),
+  topK: z.coerce.number().int().min(1).max(10).optional(),
+});
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 25 * 1024 * 1024,
+    files: 5,
+  },
+});
+
 const app = express();
 app.use(cors());
 app.use(morgan('dev'));
+app.use(express.json({ limit: '2mb' }));
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
+});
+
+app.get('/api/documents', async (_req, res) => {
+  try {
+    const documents = await listDocuments();
+    res.json({ documents });
+  } catch (error) {
+    console.error('Failed to list documents', error);
+    res.status(500).json({ message: 'Unable to load documents from Snowflake.' });
+  }
+});
+
+app.post('/api/upload', upload.array('files'), async (req, res) => {
+  const files = req.files;
+  if (!files || files.length === 0) {
+    return res.status(400).json({ message: 'Attach at least one PDF.' });
+  }
+
+  const successes = [];
+  try {
+    for (const file of files) {
+      if (file.mimetype !== 'application/pdf') {
+        throw new Error(`"${file.originalname}" is not a PDF.`);
+      }
+      const summary = await ingestPdf(file.buffer, file.originalname);
+      successes.push(summary);
+    }
+    res.json({ documents: successes });
+  } catch (error) {
+    console.error('Failed to ingest PDF', error);
+    const message = error?.message || 'Failed to upload PDF.';
+    res.status(500).json({
+      message,
+      documents: successes,
+    });
+  }
+});
+
+app.post('/api/query', async (req, res) => {
+  const parsed = queryRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      message: 'Invalid request',
+      issues: parsed.error.issues.map((issue) => issue.message),
+    });
+  }
+
+  try {
+    const { question, fileIds, topK } = parsed.data;
+    const summary = await queryKnowledgeBase({ question, fileIds, topK });
+    res.json(summary);
+  } catch (error) {
+    console.error('Failed to query knowledge base', error);
+    res.status(500).json({ message: error?.message || 'Unable to run the question against Snowflake.' });
+  }
 });
 
 app.get('/api/pdf', async (req, res) => {
