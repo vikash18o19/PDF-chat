@@ -487,7 +487,7 @@ function App() {
     <div className="app-shell">
       <header className="hero-header">
         <div>
-          <h1>AI-PDF Chat v1</h1>
+          <h1>PDF Chat v1</h1>
           <p className="subhead">
             Upload PDFs, choose which files to cite, then let the AI respond using the most relevant
             chunks. Tap a chunk to view the live PDF with highlights.
