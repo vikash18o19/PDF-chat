@@ -7,6 +7,16 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Environment / secrets
+.env
+.env.local
+.env.*
+!*.example
+
+# Runtime artifacts
+server.log
+snowflake.log
+
 node_modules
 dist
 dist-ssr

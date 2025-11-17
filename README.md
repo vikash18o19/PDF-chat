@@ -1,55 +1,69 @@
-## PDF-Chat
+# PDF-Chat
 
-Stream PDFs directly from a Snowflake stage into a Vite-powered viewer, deep link to specific pages, and highlight text ranges using query parameters.
+Vite + React front-end plus an Express API that stores PDFs, chunks, and embeddings inside Snowflake. Use it to upload a PDF, ask questions against the stored content, and preview the relevant page with highlights.
 
-### Getting Started
+## Prerequisites
 
-1. Ensure the `.env` file at the workspace root holds valid Snowflake credentials (already provided).
-2. Install dependencies:
+- Node.js 20+
+- A Snowflake account with Cortex enabled and credentials stored in the root `.env`
+- Docker (optional) when packaging
+
+Important environment variables (see `server/lib/env.cjs`): `SNOWFLAKE_*`, `CORTEX_EMBED_MODEL`, `CORTEX_LLM_MODEL`, `VECTOR_DIM`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, and optional `VITE_API_BASE_URL` when the UI and API live on different origins.
+
+## Local Development
+
+1. Install dependencies:
 
    ```bash
    npm install
    ```
 
-3. Start the full-stack dev server (Express + Vite middleware) on port `8787`:
+2. Launch the combined dev server (Express + Vite middleware) on `http://localhost:8787`:
 
    ```bash
    npm run dev
    ```
 
-   Visit `http://localhost:8787` and continue to use the query params below. The server also proxies `/api/*` calls to Snowflake.
+   The UI is served from Vite, while all `/api/*` calls are handled by Express and proxied to Snowflake.
 
-### Query Parameters
+Useful variations:
 
-Open the app at `http://localhost:5173` with the following query params:
+- `npm run dev:client` – run only the Vite UI (requires `VITE_API_BASE_URL` pointing at an already running server).
+- `npm run server` – run the Express API without Vite; ideal when you already built the client.
 
-| Param               | Required | Description                                                                                 |
-| ------------------- | -------- | ------------------------------------------------------------------------------------------- |
-| `pdf` / `identifier` | ✅       | Path to the staged PDF object (e.g. `reports/quarterly.pdf`).                              |
-| `page` / `pageNumber` | ➖     | 1-based page number that should be in view. Defaults to `1`.                                |
-| `highlightStart` / `start` | ➖ | Start character index (0-based) on the target page.                                        |
-| `highlightEnd` / `end`     | ➖ | End character index (exclusive). Must be greater than `highlightStart`.                    |
+## Working on the Backend
 
-Example: `http://localhost:5173/?pdf=reports/sample.pdf&page=2&highlightStart=120&highlightEnd=180`
+- Entry point: `server/index.cjs`. This file wires up Express, multer uploads, the Snowflake helper, and the `/api` routes (`/api/upload`, `/api/documents`, `/api/query`, `/api/pdf`).
+- Core workflows live in `server/lib/workflows.cjs`. `ingestPdf` uploads to the Snowflake stage and persists metadata + embeddings; `queryKnowledgeBase` runs similarity search and calls Cortex for the answer.
+- Snowflake access is centralized in `server/lib/snowflake.cjs` with `withSnowflakeConnection`, infrastructure bootstrap, and helpers for presigned URLs.
+- When making minor backend changes, run `npm run server` and hit the routes with curl or Postman. Logs stream to your terminal via `morgan` and console statements.
 
-### Production Notes
+## Working on the UI
 
-- `VITE_API_BASE_URL` can be set to an absolute URL when the frontend and backend live on different hosts.
-- The Express server exposes `GET /api/pdf?identifier=<path>` which fetches a presigned URL via `GET_PRESIGNED_URL`, then streams the PDF back to the browser.
-- Keep Snowflake credentials on the server only; the frontend never accesses them.
+- Main UI code: `src/App.tsx`. It contains document upload, selection, querying, PDF rendering (`react-pdf`), highlighting, zoom, and theme toggles.
+- Styling lives in `src/App.css` plus the bundled `react-pdf` layer CSS.
+- The UI reads `VITE_API_BASE_URL` to know where to send API calls. During local dev, it defaults to the same origin (`http://localhost:8787`).
+- For quick tweaks, start `npm run dev`, edit the React components, and Vite will hot-reload without restarting the server.
 
-### Docker
+## Deployment
 
-Build the production image (bundles the Vite client and Express server in one container):
+1. Build the React client + TypeScript output:
 
-```bash
-docker build -t pdf-viewer .
-```
+   ```bash
+   npm run build
+   ```
 
-Run it by passing the required Snowflake environment variables (or reuse your existing `.env` file) and mapping the exposed port:
+2. Start the production server (serves `/dist` and the API):
 
-```bash
-docker run --env-file .env -p 8787:8787 pdf-viewer
-```
+   ```bash
+   NODE_ENV=production PORT=8787 npm run server
+   ```
 
-Set `PORT` if you need a different container port, and optionally provide `VITE_API_BASE_URL` when serving the frontend and backend from separate hosts. All Snowflake-related environment variables documented in `IMPLEMENTATION_DETAILS.md` must be available at runtime for the API endpoints to connect successfully.
+3. Alternatively, package everything via Docker:
+
+   ```bash
+   docker build -t pdf-viewer .
+   docker run --env-file .env -p 8787:8787 pdf-viewer
+   ```
+
+Ensure the container or host is supplied with the same Snowflake and Cortex variables listed above. Only the backend should have direct access to those secrets; the client communicates exclusively with the Express API.
