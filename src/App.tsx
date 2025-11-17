@@ -74,6 +74,24 @@ const formatTimestamp = (input?: string) => {
 };
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const MIN_ZOOM = 0.75;
+const MAX_ZOOM = 2;
+const ZOOM_STEP = 0.15;
+const THEME_STORAGE_KEY = 'pdf-viewer-theme';
+
+type ThemeMode = 'light' | 'dark';
+
+const getPreferredTheme = (): ThemeMode => {
+  if (typeof window === 'undefined') {
+    return 'dark';
+  }
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+  if (stored === 'light' || stored === 'dark') {
+    return stored;
+  }
+  const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  return prefersDark ? 'dark' : 'light';
+};
 
 function App() {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
@@ -104,8 +122,11 @@ function App() {
   const hasAutoScrolledRef = useRef(false);
   const [textLayerVersion, setTextLayerVersion] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [theme, setTheme] = useState<ThemeMode>(() => getPreferredTheme());
 
   const selectedSet = useMemo(() => new Set(selectedDocuments), [selectedDocuments]);
+  const isDarkMode = theme === 'dark';
 
   const refreshDocuments = useCallback(async () => {
     setDocumentsLoading(true);
@@ -132,6 +153,10 @@ function App() {
   useEffect(() => {
     setSelectedDocuments((current) => current.filter((id) => documents.some((doc) => doc.fileId === id)));
   }, [documents]);
+
+  useEffect(() => {
+    setZoomLevel(1);
+  }, [viewerConfig?.identifier]);
 
   const handleFileSelection = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -384,6 +409,10 @@ function App() {
     hasAutoScrolledRef.current = true;
   }, [numPages, viewerConfig, documentSource, viewerStatus]);
 
+  const effectivePageWidth = useMemo(() => clamp(viewerWidth * zoomLevel, 280, 1800), [viewerWidth, zoomLevel]);
+  const zoomPercent = Math.round(zoomLevel * 100);
+  const disableZoomOut = zoomLevel <= MIN_ZOOM + 0.001;
+  const disableZoomIn = zoomLevel >= MAX_ZOOM - 0.001;
   const disableQuestion = !question.trim() || selectedDocuments.length === 0 || queryLoading;
   const viewerOpen = Boolean(viewerConfig);
   const viewerReady = viewerStatus === 'ready';
@@ -392,6 +421,24 @@ function App() {
   const workbenchClassName = `workbench${viewerOpen ? ' viewer-open' : ''}`;
   const viewerPanelClassName = `viewer-panel${viewerOpen ? ' open' : ''}`;
   const viewerOverlayTone = viewerStatus === 'idle' ? 'error' : 'info';
+
+  const nudgeZoom = useCallback((direction: 'in' | 'out') => {
+    setZoomLevel((current) => {
+      const delta = direction === 'in' ? ZOOM_STEP : -ZOOM_STEP;
+      return clamp(Number((current + delta).toFixed(2)), MIN_ZOOM, MAX_ZOOM);
+    });
+  }, []);
+
+  const handleZoomSlider = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const nextValue = Number(event.target.value);
+    if (Number.isFinite(nextValue)) {
+      setZoomLevel(clamp(nextValue, MIN_ZOOM, MAX_ZOOM));
+    }
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => (current === 'dark' ? 'light' : 'dark'));
+  }, []);
 
   useEffect(() => {
     if (typeof document === 'undefined') {
@@ -424,20 +471,49 @@ function App() {
     return () => observer.disconnect();
   }, [viewerOpen]);
 
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    const classList = document.body.classList;
+    classList.remove('theme-light', 'theme-dark');
+    classList.add(`theme-${theme}`);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    }
+  }, [theme]);
+
   return (
     <div className="app-shell">
       <header className="hero-header">
         <div>
-          <p className="eyebrow">Snowflake Cortex · PDF RAG</p>
-          <h1>Vectorize PDFs, ask questions, and inspect every source.</h1>
+          <h1>AI-PDF Chat v1</h1>
           <p className="subhead">
-            Upload internal decks, choose which files to trust, then let the AI respond using the most relevant
-            Snowflake chunks. Tap a chunk to view the live PDF with highlights.
+            Upload PDFs, choose which files to cite, then let the AI respond using the most relevant
+            chunks. Tap a chunk to view the live PDF with highlights.
           </p>
         </div>
-        <button className="ghost-button" type="button" onClick={refreshDocuments} disabled={documentsLoading}>
-          Refresh
-        </button>
+        <div className="hero-actions">
+          <button
+            className={`theme-toggle ${theme}`}
+            type="button"
+            onClick={toggleTheme}
+            aria-label="Toggle color theme"
+            aria-pressed={isDarkMode}
+          >
+            <span className="theme-toggle__icons" aria-hidden="true">
+              <span className="theme-toggle__icon theme-toggle__icon--sun">☀︎</span>
+              <span className="theme-toggle__icon theme-toggle__icon--moon">☾</span>
+            </span>
+            <span className="theme-toggle__track" aria-hidden="true">
+              <span className="theme-toggle__thumb" />
+            </span>
+            <span className="theme-toggle__label">{isDarkMode ? 'Dark mode' : 'Light mode'}</span>
+          </button>
+          <button className="ghost-button" type="button" onClick={refreshDocuments} disabled={documentsLoading}>
+            Refresh
+          </button>
+        </div>
       </header>
 
       <div className={workbenchClassName}>
@@ -446,7 +522,7 @@ function App() {
             <div className="card-header">
               <div>
                 <h2>Upload PDFs</h2>
-                <p>Files are staged in Snowflake and vectorized automatically.</p>
+                <p>Uploaded files are staged in Snowflake and vectorized automatically.</p>
               </div>
               <button
                 className="primary-button"
@@ -466,10 +542,10 @@ function App() {
               />
             </div>
             {uploadError && <p className="card-error">{uploadError}</p>}
-            <ul className="card-list">
+            {/* <ul className="card-list">
               <li>Vector embedding model + chunk size defined in your environment.</li>
               <li>We store per-page character ranges to enable instant highlighting later.</li>
-            </ul>
+            </ul> */}
           </div>
 
           <div className="panel-card">
@@ -518,7 +594,7 @@ function App() {
               rows={3}
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
-              placeholder="What changed in the most recent financial update?"
+              placeholder="Write your question here."
             />
             {queryError && <p className="card-error">{queryError}</p>}
             <div className="question-footer">
@@ -591,16 +667,51 @@ function App() {
                   <p className="eyebrow">PDF Preview</p>
                   <h2>Context with highlights</h2>
                 </div>
-                <button
-                  className="ghost-button"
-                  type="button"
-                  onClick={() => {
-                    setViewerConfig(null);
-                    setActiveChunkId(null);
-                  }}
-                >
-                  Hide
-                </button>
+                <div className="viewer-toolbar">
+                  <div className="zoom-controls" aria-label="Zoom controls">
+                    <button
+                      className="zoom-button"
+                      type="button"
+                      onClick={() => nudgeZoom('out')}
+                      disabled={disableZoomOut}
+                      aria-label="Zoom out"
+                    >
+                      −
+                    </button>
+                    <input
+                      className="zoom-slider"
+                      type="range"
+                      min={MIN_ZOOM}
+                      max={MAX_ZOOM}
+                      step={0.05}
+                      value={zoomLevel}
+                      onChange={handleZoomSlider}
+                      aria-label="Zoom level"
+                    />
+                    <span className="zoom-label" aria-live="polite">
+                      {zoomPercent}%
+                    </span>
+                    <button
+                      className="zoom-button"
+                      type="button"
+                      onClick={() => nudgeZoom('in')}
+                      disabled={disableZoomIn}
+                      aria-label="Zoom in"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      setViewerConfig(null);
+                      setActiveChunkId(null);
+                    }}
+                  >
+                    Hide
+                  </button>
+                </div>
               </div>
               <div className="viewer-shell">
                 <div className="viewer-stage" ref={viewerStageRef}>
@@ -638,7 +749,7 @@ function App() {
                                     <Page
                                       className="pdf-page"
                                       pageNumber={pageNumber}
-                                      width={viewerWidth}
+                                      width={effectivePageWidth}
                                       renderAnnotationLayer={false}
                                       renderTextLayer
                                       onGetTextSuccess={(textContent) => handleTextSuccess(pageNumber, textContent)}

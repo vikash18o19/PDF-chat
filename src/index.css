@@ -8,18 +8,55 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --glass-bg: rgba(4, 8, 24, 0.7);
-  --glass-bg-strong: rgba(8, 12, 32, 0.85);
-  --glass-border: rgba(255, 255, 255, 0.18);
-  --glass-border-strong: rgba(255, 255, 255, 0.35);
-  --text-strong: #f8fbff;
-  --text-muted: rgba(219, 229, 255, 0.78);
-  --accent-primary: #7dd3fc;
-  --accent-secondary: #a855f7;
-  --accent-tertiary: #f5d0fe;
-  --danger: #fca5a5;
+  --brand-navy: #1e3a7d;
+  --brand-royal: #5d7fd0;
+  --brand-sky: #b4bed8;
+  --brand-gold: #edbb69;
+  --glass-bg: rgba(5, 10, 28, 0.78);
+  --glass-bg-strong: rgba(10, 16, 40, 0.9);
+  --glass-border: rgba(180, 190, 216, 0.25);
+  --glass-border-strong: rgba(180, 190, 216, 0.45);
+  --text-strong: #f3f6ff;
+  --text-muted: rgba(180, 190, 216, 0.82);
+  --accent-primary: var(--brand-royal);
+  --accent-secondary: var(--brand-gold);
+  --accent-tertiary: var(--brand-sky);
+  --danger: #ed7769;
   --radius-lg: 26px;
   --radius-xl: 38px;
+  --button-primary-bg: #5d7fd0;
+  --button-primary-color: #081432;
+  --button-primary-border: rgba(255, 255, 255, 0.2);
+  --button-primary-shadow: 0 18px 45px rgba(93, 127, 208, 0.4);
+  --button-primary-hover-shadow: 0 24px 45px rgba(93, 127, 208, 0.5);
+  --body-gradient: radial-gradient(circle at 12% 18%, rgba(93, 127, 208, 0.45), transparent 55%),
+    radial-gradient(circle at 78% 0%, rgba(237, 187, 105, 0.28), transparent 55%),
+    radial-gradient(circle at 30% 78%, rgba(30, 58, 125, 0.5), transparent 55%),
+    linear-gradient(135deg, #040a1c, #09133a, #0d1f53);
+  --body-spotlight-top: radial-gradient(circle, rgba(93, 127, 208, 0.4), transparent 60%);
+  --body-spotlight-bottom: radial-gradient(circle, rgba(237, 187, 105, 0.32), transparent 55%);
+}
+
+body.theme-light {
+  --glass-bg: rgba(255, 255, 255, 0.92);
+  --glass-bg-strong: rgba(255, 255, 255, 0.97);
+  --glass-border: rgba(30, 58, 125, 0.15);
+  --glass-border-strong: rgba(30, 58, 125, 0.2);
+  --text-strong: #1e3a7d;
+  --text-muted: rgba(30, 58, 125, 0.7);
+  --body-gradient: radial-gradient(circle at 18% 12%, rgba(93, 127, 208, 0.28), transparent 55%),
+    radial-gradient(circle at 78% 0%, rgba(237, 187, 105, 0.25), transparent 60%),
+    radial-gradient(circle at 28% 80%, rgba(180, 190, 216, 0.32), transparent 58%),
+    linear-gradient(135deg, #f8fbff, #f0f4ff, #fff6eb);
+  --body-spotlight-top: radial-gradient(circle, rgba(93, 127, 208, 0.35), transparent 60%);
+  --body-spotlight-bottom: radial-gradient(circle, rgba(237, 187, 105, 0.25), transparent 55%);
+  color: var(--text-strong);
+  background-color: #f4f6fb;
+  --button-primary-bg: #1e3a7d;
+  --button-primary-color: #f6f8ff;
+  --button-primary-border: rgba(30, 58, 125, 0.3);
+  --button-primary-shadow: 0 16px 40px rgba(30, 58, 125, 0.3);
+  --button-primary-hover-shadow: 0 22px 46px rgba(30, 58, 125, 0.35);
 }
 
 *,
@@ -34,11 +71,7 @@ body {
   position: relative;
   overflow-x: hidden;
   color: var(--text-strong);
-  background:
-    radial-gradient(circle at 12% 18%, rgba(125, 211, 252, 0.45), transparent 55%),
-    radial-gradient(circle at 82% 12%, rgba(248, 113, 113, 0.32), transparent 50%),
-    radial-gradient(circle at 30% 78%, rgba(14, 165, 233, 0.25), transparent 55%),
-    linear-gradient(135deg, #01030a, #050f24, #0b1a3c);
+  background: var(--body-gradient);
   background-size: 160% 160%, 180% 180%, 200% 200%, 120% 120%;
   background-blend-mode: screen, screen, screen, normal;
 }
@@ -51,7 +84,7 @@ body::after {
   height: 70vw;
   top: 6%;
   left: -20%;
-  background: radial-gradient(circle, rgba(147, 197, 253, 0.35), transparent 60%);
+  background: var(--body-spotlight-top);
   filter: blur(120px);
   opacity: 0.35;
   pointer-events: none;
@@ -66,7 +99,14 @@ body::after {
   right: -15%;
   width: 60vw;
   height: 60vw;
-  background: radial-gradient(circle, rgba(248, 113, 113, 0.22), transparent 55%);
+  background: var(--body-spotlight-bottom);
+}
+
+body.theme-light::before,
+body.theme-light::after {
+  mix-blend-mode: normal;
+  opacity: 0.45;
+  filter: blur(140px);
 }
 
 #root {
