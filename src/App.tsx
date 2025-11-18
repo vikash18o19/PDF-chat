@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import type { DocumentProps, PageProps } from 'react-pdf';
 import type { TextContent, TextItem } from 'pdfjs-dist/types/src/display/api';
@@ -17,6 +18,8 @@ type QueryConfig = {
   page: number;
   highlight: HighlightRange | null;
 };
+
+type SearchResult = { page: number; start: number; end: number };
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
@@ -78,6 +81,10 @@ const escapeHtml = (value: string) =>
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2;
+const ZOOM_STEP = 0.1;
+
 function App() {
   const queryConfig = useMemo(() => parseQueryParams(), []);
   const [documentSource, setDocumentSource] = useState<DocumentProps['file']>(null);
@@ -86,11 +93,16 @@ function App() {
   const [viewerWidth, setViewerWidth] = useState(() =>
     clamp(window.innerWidth - 64, 320, 1200),
   );
+  const [zoomFactor, setZoomFactor] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [activeResultIndex, setActiveResultIndex] = useState(0);
   const textSegmentMapRef = useRef<Map<number, Map<number, { start: number; end: number }>>>(
     new Map(),
   );
+  const pageTextMapRef = useRef<Map<number, string>>(new Map());
   const pageRefs = useRef<Map<number, HTMLDivElement | null>>(new Map());
   const pagesContainerRef = useRef<HTMLDivElement | null>(null);
   const hasAutoScrolledRef = useRef(false);
@@ -170,6 +182,7 @@ function App() {
   const handleTextSuccess = useCallback((pageNumber: number, textContent: TextContent) => {
     const nextMap = new Map<number, { start: number; end: number }>();
     let cursor = 0;
+    let combinedText = '';
 
     textContent.items.forEach((item, index) => {
       if (!isTextItem(item)) {
@@ -179,20 +192,41 @@ function App() {
       const end = start + item.str.length;
       nextMap.set(index, { start, end });
       cursor = end;
+      combinedText += item.str;
     });
 
     textSegmentMapRef.current.set(pageNumber, nextMap);
+    pageTextMapRef.current.set(pageNumber, combinedText);
     setTextLayerVersion((version) => version + 1);
   }, []);
 
+  const highlightState = useMemo(() => {
+    if (searchResults.length && searchResults[activeResultIndex]) {
+      const current = searchResults[activeResultIndex];
+      return {
+        page: current.page,
+        range: { start: current.start, end: current.end },
+      };
+    }
+
+    if (
+      queryConfig.highlight &&
+      queryConfig.highlight.end > queryConfig.highlight.start &&
+      Number.isFinite(queryConfig.highlight.start) &&
+      Number.isFinite(queryConfig.highlight.end)
+    ) {
+      return {
+        page: queryConfig.page,
+        range: queryConfig.highlight,
+      };
+    }
+
+    return null;
+  }, [activeResultIndex, queryConfig.highlight, queryConfig.page, searchResults]);
+
   const customTextRenderer = useCallback(
     (pageNumber: number, { itemIndex, str }: Parameters<NonNullable<PageProps['customTextRenderer']>>[0]) => {
-      if (pageNumber !== targetPage) {
-        return escapeHtml(str);
-      }
-
-      const highlight = queryConfig.highlight;
-      if (!highlight) {
+      if (!highlightState?.range || pageNumber !== highlightState.page) {
         return escapeHtml(str);
       }
 
@@ -206,6 +240,7 @@ function App() {
         return escapeHtml(str);
       }
 
+      const highlight = highlightState.range;
       if (highlight.end <= bounds.start || highlight.start >= bounds.end) {
         return escapeHtml(str);
       }
@@ -223,19 +258,27 @@ function App() {
 
       return `${escapeHtml(before)}<mark class="highlighted-text">${escapeHtml(highlighted)}</mark>${escapeHtml(after)}`;
     },
-    [queryConfig.highlight, targetPage, textLayerVersion],
+    [highlightState, textLayerVersion],
   );
-
-  const highlightSummary =
-    queryConfig.highlight && queryConfig.highlight.end > queryConfig.highlight.start
-      ? `${queryConfig.highlight.start} → ${queryConfig.highlight.end}`
-      : '—';
 
   useEffect(() => {
     pageRefs.current.clear();
     textSegmentMapRef.current.clear();
+    pageTextMapRef.current.clear();
     hasAutoScrolledRef.current = false;
+    setSearchResults([]);
+    setActiveResultIndex(0);
   }, [documentSource]);
+
+  const clampPageNumber = useCallback(
+    (value: number) => {
+      if (!numPages || numPages < 1) {
+        return Math.max(1, value);
+      }
+      return clamp(value, 1, numPages);
+    },
+    [numPages],
+  );
 
   const scrollPageIntoView = useCallback(
     (pageNumber = targetPage, behavior?: ScrollBehavior) => {
@@ -261,34 +304,222 @@ function App() {
     scrollPageIntoView(targetPage);
   }, [numPages, targetPage, documentSource, scrollPageIntoView]);
 
+  const handleZoomChange = useCallback((nextZoom: number) => {
+    setZoomFactor((current) => clamp(nextZoom ?? current, ZOOM_MIN, ZOOM_MAX));
+  }, []);
+
+  const handleZoomStep = useCallback((delta: number) => {
+    setZoomFactor((current) => clamp(Number((current + delta).toFixed(2)), ZOOM_MIN, ZOOM_MAX));
+  }, []);
+
+  const handlePageInput = useCallback(
+    (value: string) => {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) {
+        return;
+      }
+      const nextPage = clampPageNumber(Math.floor(parsed));
+      setTargetPage(nextPage);
+      requestAnimationFrame(() => scrollPageIntoView(nextPage, 'smooth'));
+    },
+    [clampPageNumber, scrollPageIntoView],
+  );
+
+  const handlePageStep = useCallback(
+    (delta: number) => {
+      setTargetPage((current) => {
+        const nextPage = clampPageNumber((current ?? 1) + delta);
+        requestAnimationFrame(() => scrollPageIntoView(nextPage, 'smooth'));
+        return nextPage;
+      });
+    },
+    [clampPageNumber, scrollPageIntoView],
+  );
+
+  const runSearch = useCallback(
+    (query: string) => {
+      const normalized = query.trim();
+      if (!normalized) {
+        setSearchResults([]);
+        setActiveResultIndex(0);
+        return;
+      }
+
+      const lowerQuery = normalized.toLowerCase();
+      const nextResults: SearchResult[] = [];
+      pageTextMapRef.current.forEach((text, pageNumber) => {
+        if (!text) {
+          return;
+        }
+        const lowerText = text.toLowerCase();
+        let index = lowerText.indexOf(lowerQuery);
+        while (index !== -1) {
+          nextResults.push({
+            page: pageNumber,
+            start: index,
+            end: index + normalized.length,
+          });
+          index = lowerText.indexOf(lowerQuery, index + lowerQuery.length);
+        }
+      });
+
+      nextResults.sort((a, b) => (a.page === b.page ? a.start - b.start : a.page - b.page));
+      setSearchResults(nextResults);
+      setActiveResultIndex(0);
+
+      if (nextResults.length > 0) {
+        const first = nextResults[0];
+        setTargetPage(first.page);
+        requestAnimationFrame(() => scrollPageIntoView(first.page, 'smooth'));
+      }
+    },
+    [scrollPageIntoView],
+  );
+
+  const handleSearchSubmit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      runSearch(searchQuery);
+    },
+    [runSearch, searchQuery],
+  );
+
+  const handleSearchNavigate = useCallback(
+    (direction: 1 | -1) => {
+      if (!searchResults.length) {
+        return;
+      }
+      setActiveResultIndex((current) => {
+        const nextIndex = (current + direction + searchResults.length) % searchResults.length;
+        const nextResult = searchResults[nextIndex];
+        if (nextResult) {
+          setTargetPage(nextResult.page);
+          requestAnimationFrame(() => scrollPageIntoView(nextResult.page, 'smooth'));
+        }
+        return nextIndex;
+      });
+    },
+    [scrollPageIntoView, searchResults],
+  );
+
+  const handleClearSearch = useCallback(() => {
+    setSearchQuery('');
+    setSearchResults([]);
+    setActiveResultIndex(0);
+  }, []);
+
+  const pageWidth = Math.round(viewerWidth * zoomFactor);
+  const disablePrevPage = targetPage <= 1 || !numPages;
+  const disableNextPage = !numPages || Boolean(numPages && targetPage >= numPages);
+  const hasSearchResults = searchResults.length > 0;
+
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <div>
-          {/* <p className="eyebrow">Snowflake PDF Stage Viewer</p> */}
-          <h1>Snowflake PDF Stage Viewer</h1>
-          {/* <p className="subhead">
-            Pass <code>?pdf=</code>, <code>&page=</code>, and <code>&highlightStart=</code> /
-            <code>&highlightEnd=</code> to deep link directly to the text
-          </p> */}
-        </div>
-        <dl className="query-summary">
-          <div>
-            <dt>PDF Identifier</dt>
-            <dd>{queryConfig.identifier ?? 'Not provided'}</dd>
-          </div>
-          <div>
-            <dt>Requested Page</dt>
-            <dd>{queryConfig.page}</dd>
-          </div>
-          <div>
-            <dt>Highlight Range</dt>
-            <dd>{highlightSummary}</dd>
-          </div>
-        </dl>
-      </header>
-
       <main className="app-main">
+        <section className="viewer-toolbar">
+          <div className="toolbar-group">
+            <button
+              type="button"
+              className="toolbar-button"
+              onClick={() => handlePageStep(-1)}
+              disabled={disablePrevPage}
+            >
+              Prev
+            </button>
+            <label className="page-input-label">
+              Page
+              <input
+                type="number"
+                min={1}
+                max={numPages ?? undefined}
+                value={targetPage}
+                onChange={(event) => handlePageInput(event.target.value)}
+                className="page-input"
+              />
+              {numPages ? <span className="page-count">/ {numPages}</span> : null}
+            </label>
+            <button
+              type="button"
+              className="toolbar-button"
+              onClick={() => handlePageStep(1)}
+              disabled={disableNextPage}
+            >
+              Next
+            </button>
+          </div>
+
+          <div className="toolbar-group zoom-controls">
+            <button
+              type="button"
+              className="toolbar-button"
+              onClick={() => handleZoomStep(-ZOOM_STEP)}
+              disabled={zoomFactor <= ZOOM_MIN}
+            >
+              −
+            </button>
+            <input
+              type="range"
+              min={ZOOM_MIN}
+              max={ZOOM_MAX}
+              step={ZOOM_STEP}
+              value={zoomFactor}
+              onChange={(event) => handleZoomChange(Number(event.target.value))}
+              className="zoom-slider"
+            />
+            <button
+              type="button"
+              className="toolbar-button"
+              onClick={() => handleZoomStep(ZOOM_STEP)}
+              disabled={zoomFactor >= ZOOM_MAX}
+            >
+              +
+            </button>
+            <span className="zoom-value">{Math.round(zoomFactor * 100)}%</span>
+          </div>
+
+          <form className="toolbar-group search-controls" onSubmit={handleSearchSubmit}>
+            <input
+              type="text"
+              placeholder="Find text..."
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              className="search-input"
+            />
+            <button type="submit" className="toolbar-button">
+              Search
+            </button>
+            <button
+              type="button"
+              className="toolbar-button"
+              onClick={handleClearSearch}
+              disabled={!searchQuery && !hasSearchResults}
+            >
+              Clear
+            </button>
+            <div className="search-navigation">
+              <button
+                type="button"
+                className="toolbar-button"
+                onClick={() => handleSearchNavigate(-1)}
+                disabled={!hasSearchResults}
+              >
+                Prev Match
+              </button>
+              <button
+                type="button"
+                className="toolbar-button"
+                onClick={() => handleSearchNavigate(1)}
+                disabled={!hasSearchResults}
+              >
+                Next Match
+              </button>
+              <span className="search-status">
+                {hasSearchResults ? `${activeResultIndex + 1} / ${searchResults.length}` : '0 / 0'}
+              </span>
+            </div>
+          </form>
+        </section>
+
         {errorMessage && <div className="status-card error">{errorMessage}</div>}
         {isLoading && <div className="status-card info">Fetching PDF from Snowflake…</div>}
         {!queryConfig.identifier && (
@@ -333,7 +564,7 @@ function App() {
                         <Page
                           className="pdf-page"
                           pageNumber={pageNumber}
-                          width={viewerWidth}
+                          width={pageWidth}
                           renderAnnotationLayer={false}
                           renderTextLayer
                           onGetTextSuccess={(textContent) => handleTextSuccess(pageNumber, textContent)}

@@ -5,76 +5,112 @@
   gap: 2rem;
 }
 
-.app-header {
-  background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 64, 175, 0.85));
-  border-radius: 20px;
-  padding: 1.75rem clamp(1.25rem, 4vw, 2.75rem);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.25rem;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow:
-    0 10px 30px rgba(15, 23, 42, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.25);
-  color: #f8fafc;
-}
-
-.eyebrow {
-  text-transform: uppercase;
-  letter-spacing: 0.2em;
-  font-size: 0.75rem;
-  color: rgba(226, 232, 240, 0.75);
-  margin: 0 0 0.5rem;
-}
-
-.app-header h1 {
-  margin: 0;
-  font-size: clamp(1.65rem, 2.5vw, 2.4rem);
-  color: #f8fafc;
-  letter-spacing: -0.02em;
-}
-
-.subhead {
-  max-width: 36rem;
-  margin: 0.35rem 0 0;
-  color: rgba(226, 232, 240, 0.75);
-  font-size: 0.95rem;
-  line-height: 1.45;
-}
-
-.query-summary {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 1rem;
-  margin: 0;
-  padding: 0.75rem;
-  border-radius: 16px;
-  background: rgba(15, 23, 42, 0.45);
-  border: 1px solid rgba(148, 163, 184, 0.2);
-}
-
-.query-summary dt {
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: #94a3b8;
-  margin-bottom: 0.25rem;
-}
-
-.query-summary dd {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 500;
-  color: #e2e8f0;
-  word-break: break-word;
-}
-
 .app-main {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
+}
+
+.viewer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-radius: 18px;
+  background: #ffffff;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.toolbar-button {
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 0.45rem 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: #0f172a;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.toolbar-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar-button:not(:disabled):hover {
+  background: #e2e8f0;
+}
+
+.page-input-label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.page-input {
+  width: 4rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  font-weight: 600;
+  text-align: center;
+}
+
+.page-count {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.zoom-controls {
+  flex: 1;
+  justify-content: center;
+}
+
+.zoom-slider {
+  width: clamp(120px, 20vw, 240px);
+}
+
+.zoom-value {
+  min-width: 3rem;
+  text-align: right;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.search-controls {
+  flex: 1 1 320px;
+  gap: 0.5rem;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 160px;
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+}
+
+.search-navigation {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.search-status {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #475569;
 }
 
 .status-card {
@@ -135,7 +171,38 @@
 }
 
 .pdf-page {
-  width: 100%;
+  width: auto;
+  display: flex;
+  justify-content: center;
+  position: relative;
+}
+
+.pdf-page canvas,
+.pdf-page .react-pdf__Page__canvas {
+  margin: 0 auto;
+  display: block;
+  pointer-events: none;
+}
+
+.pdf-page .react-pdf__Page__textContent {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: auto;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.pdf-page .react-pdf__Page__textContent :is(span, mark) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.pdf-page .react-pdf__Page__textContent .highlighted-text {
+  background: linear-gradient(120deg, rgba(251, 191, 36, 0.45), rgba(253, 230, 138, 0.45));
+  border-radius: 3px;
+  padding: 0 0.1em;
+  color: inherit;
 }
 
 .page-footnote {
@@ -143,19 +210,12 @@
   color: #475569;
 }
 
-.highlighted-text {
-  background: linear-gradient(120deg, rgba(251, 191, 36, 0.45), rgba(253, 230, 138, 0.45));
-  border-radius: 3px;
-  padding: 0 0.1em;
-  color: inherit;
-}
-
 @media (max-width: 768px) {
   .app-shell {
     padding: 1.5rem 1rem 2rem;
   }
 
-  .app-header {
-    padding: 1.75rem;
+  .viewer-toolbar {
+    flex-direction: column;
   }
 }
