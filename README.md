@@ -21,7 +21,7 @@ Stream PDFs directly from a Snowflake stage into a Vite-powered viewer, deep lin
 
 ### Query Parameters
 
-Open the app at `http://localhost:5173` with the following query params:
+Open the app at `http://localhost:8787` with the following query params:
 
 | Param               | Required | Description                                                                                 |
 | ------------------- | -------- | ------------------------------------------------------------------------------------------- |
@@ -30,7 +30,7 @@ Open the app at `http://localhost:5173` with the following query params:
 | `highlightStart` / `start` | ➖ | Start character index (0-based) on the target page.                                        |
 | `highlightEnd` / `end`     | ➖ | End character index (exclusive). Must be greater than `highlightStart`.                    |
 
-Example: `http://localhost:5173/?pdf=reports/sample.pdf&page=2&highlightStart=120&highlightEnd=180`
+Example: `http://localhost:8787/?pdf=reports/sample.pdf&page=2&highlightStart=120&highlightEnd=180`
 
 ### Docker
 
