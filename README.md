@@ -32,6 +32,39 @@ Open the app at `http://localhost:5173` with the following query params:
 
 Example: `http://localhost:5173/?pdf=reports/sample.pdf&page=2&highlightStart=120&highlightEnd=180`
 
+### Docker
+
+You can also run the viewer in Docker without installing Node locally:
+
+1. Build the image:
+
+   ```bash
+   docker build -t snowflake-pdf-viewer .
+   ```
+
+2. Start the container, providing all required Snowflake environment variables (or re-use your local `.env` file):
+
+   ```bash
+   docker run --rm -p 8787:8787 --env-file .env snowflake-pdf-viewer
+   ```
+
+   The server listens on port `8787` inside the container, so the example above exposes it at `http://localhost:8787`.
+
+### OCI Terraform VM
+
+Provision a compute instance on Oracle Cloud Infrastructure using the Terraform config in `infra/main.tf`:
+
+1. Export (or provide via `terraform.tfvars`) the required OCI credentials: `tenancy_ocid`, `user_ocid`, `api_key_fingerprint`, `api_private_key_path`, `region`, `compartment_ocid`, and your `ssh_public_key`.
+2. Initialize and apply:
+
+   ```bash
+   cd infra
+   terraform init
+   terraform apply
+   ```
+
+   The plan creates a small VCN, public subnet, and a single flexible VM (`VM.Standard.A1.Flex` by default) with port `8787` exposed so you can deploy this PDF viewer on the instance once it boots. If Oracle Linux image lookup fails in your region, either set `image_ocid` to a known image ID or tweak `oracle_linux_version` in `terraform.tfvars`. For regions with limited capacity, override `shape` (and optionally `availability_domain`) in `terraform.tfvars` to a shape/AD that has quota in your tenancy.
+
 ### Production Notes
 
 - `VITE_API_BASE_URL` can be set to an absolute URL when the frontend and backend live on different hosts.
